@@ -17,26 +17,32 @@ def upload_torrents(sftp):
         sftp.put(
             torrent,
             f"/home/user/blackhole/{config['name']}/{filename}",
+            callback=progress,
         )
+        print()
         os.remove(torrent)
 
 
 # Grabs files. They can be deleted after downloading
 def download_files(sftp):
-    files = sftp.listdir(f"/home/user/files/hs/{config['name']}/")
-    for path in files:
-        file = path.split("/")[-1]
+    remote_base_dir=f"/home/user/files/hs/{config['name']}/"
+    files = sftp.listdir(remote_base_dir)
+    for file in files:
+        path = remote_base_dir + file
         print(f"Downloading {file} from seedbox")
         if is_writing(sftp, path):
             print(f"skipping {file}. Is currently being written to disk")
             continue
         destination = get_plex_filename(file)
-        if not_enough_space(sftp, path, destination):
+        if not destination:
+            print(f"couldn't find handler for {file}")
+        if not_enough_space(sftp, path):
             print(f"Can't download {file}. Not enough space on disk")
             continue
-        sftp.get(path, destination)
+        sftp.get(path, destination, callback=progress)
+        print()
         print(f"Cleaning up {file} from seedbox")
-        sftp.remove(files)
+        sftp.remove(path)
 
 
 def is_writing(sftp, file):
@@ -46,11 +52,50 @@ def is_writing(sftp, file):
     return first_read.st_size != second_read.st_size
 
 
-def not_enough_space(sftp, src, dest):
-    dest_dir = dest[0:dest.rfind('/')]
-    local_space = shutil.disk_usage(dest_dir).free
+def not_enough_space(sftp, src):
+    local_space = shutil.disk_usage(config["plex_dir"]).free
     remote_filesize = sftp.lstat(src).st_size
-    return local_space > remote_filesize
+    return local_space < remote_filesize
+
+
+last_time = time.time()
+last_speed = 0
+last_percent = 0
+
+def progress(current, total):
+    global last_percent
+    progress_percent = current/total * 100
+    if round(last_percent, 1) < round(progress_percent, 1):
+        global last_time
+        global last_speed
+        current_time = time.time()
+        term_size = shutil.get_terminal_size(fallback=(120, 50))
+        progress = f"{int(progress_percent)}%"
+        speed = ((progress_percent - last_percent) * total / 100) / (current_time - last_time)
+        fancy_speed = get_fancy_speed(speed + last_speed / 2)
+        bar = ""
+        bar_size = term_size.columns - len(progress) - len(fancy_speed) - 5
+        for i in range(bar_size):
+            if i > int(progress_percent/100 * bar_size):
+                bar += " "
+            elif i == int(progress_percent/100 * bar_size):
+                bar += ">"
+            else:
+                bar += "="
+        print(f"\r[{bar}] {progress} {fancy_speed} ", end="")
+        last_time = current_time
+        last_percent = progress_percent
+        last_speed = speed
+
+
+def get_fancy_speed(speed_in_bps):
+    if speed_in_bps > 10**9:
+        return f"{speed_in_bps/10**9: >6.2f} GB/s"
+    if speed_in_bps > 10**6:
+        return f"{speed_in_bps/10**6: >6.2f} MB/s"
+    if speed_in_bps > 10**3:
+        return f"{speed_in_bps/10**3: >6.2f} KB/s"
+    return f"{speed_in_bps: >6.2f}  B/s"
 
 
 def read_config():
@@ -79,22 +124,23 @@ def read_config():
         )
         sys.exit(1)
     for dir in ['torrent_dir', 'plex_dir']:
-        if raw_config[dir][-1] != "/":
+        if raw_config.get(dir) and raw_config[dir][-1] != "/":
             config[dir] = raw_config[dir] + "/"
         else:
-            config[dir] = raw_config[dir]
+            config[dir] = raw_config.get(dir)
         if not os.path.isdir(config[dir]):
             os.makedirs(config[dir])
     config_keys = [
         'anime',
         'name',
-        'seedbox_url',
+        'seedbox_host',
+        'seedbox_port',
         'seedbox_user',
         'seedbox_pass',
         'verbose',
     ]
     for key in config_keys:
-        config[key] = raw_config[key]
+        config[key] = raw_config.get(key)
     config['verbose'] = False
     return config
 
@@ -121,12 +167,12 @@ def dump_template_config():
             }
         },
         'name': "unique name",
-        'seedbox_url': "seedbox.domain.name:port",
+        'seedbox_host': "seedbox.domain.name",
+        'seedbox_port': "2222",
         'seedbox_user': "username",
         'seedbox_pass': "password",
         'verbose': False,
         'plex_dir': "/path/to/anime/plex/dir",
-        'torrent_dir': "/path/to/torrents"
     }
     config_file = f"{os.getenv('HOME')}/.config/mva/config.yaml"
     with open(config_file, "w") as handle:
@@ -158,7 +204,9 @@ def contains_show_name(search_string, anime, seasons):
         for season in seasons:
             if season['alias'] == search_string:
                 return True
-    return False
+        return False
+    else:
+        return True
 
 
 # Also puts in proper dir name!
@@ -177,7 +225,7 @@ def cleanup_name_hs(name):
     split_name = clean_name.rsplit("-", 1)
     split_name[0] = split_name[0].strip()
     split_name[1] = split_name[1].strip()
-    print(split_name)
+    print_verbose(split_name)
     return split_name
 
 
@@ -197,7 +245,7 @@ def cleanup_name_sp(name):
     split_name = clean_name.rsplit("-", 1)
     split_name[0] = split_name[0].strip()
     split_name[1] = split_name[1].strip()
-    print(split_name)
+    print_verbose(split_name)
     return split_name
 
 
@@ -219,7 +267,7 @@ def get_plex_filename(filename):
             else:
                 print(f"Skiping {filename}. No rule")
                 return None
-    print(f"{filename} can't be moved. No handling")
+    print(f"{filename} can't be downloaded. No handling")
     return None
 
 
@@ -230,6 +278,7 @@ def print_verbose(*msg):
 
 def main(argv):
     ssh = paramiko.client.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.client.AutoAddPolicy)
     global config
     config = read_config()
     for arg in argv:
@@ -238,7 +287,8 @@ def main(argv):
     if config['verbose']:
         print(config)
     ssh.connect(
-        config['seedbox_url'],
+        config['seedbox_host'],
+        port=config['seedbox_port'],
         username=config['seedbox_user'],
         password=config['seedbox_pass']
     )
