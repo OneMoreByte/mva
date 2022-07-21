@@ -148,7 +148,7 @@ def read_config():
             f"{os.getenv('HOME')}/.config/mva/config.yaml",
         )
         sys.exit(1)
-    for dir in ['torrent_dir', 'plex_dir']:
+    for dir in ['torrent_dir', 'plex_dir', 'backup_dir']:
         if raw_config.get(dir) and raw_config[dir][-1] != "/":
             config[dir] = raw_config[dir] + "/"
         else:
@@ -162,6 +162,8 @@ def read_config():
         'seedbox_port',
         'seedbox_user',
         'seedbox_pass',
+        'rate_limit',
+        'webhook_url',
         'verbose',
     ]
     global WEBHOOK_URL
@@ -201,6 +203,7 @@ def dump_template_config():
         'verbose': False,
         'plex_dir': "/path/to/anime/plex/dir",
         'backup_dir': "/path/to/backup/dir",
+        'torrent_dir': "/path/to/torrents/",
         'webhook_url': "https://discord.gg/.../",
         'rate_limit': 50,
     }
