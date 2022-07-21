@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import discord
 import glob
 import os
 import paramiko
@@ -7,20 +8,43 @@ import re
 import sys
 import shutil
 import time
+import traceback
 import yaml
 
 
+WEBHOOK_URL = ""
+
 def upload_torrents(sftp):
-    for torrent in glob.glob(f"{config['torrent_dir']}/*.torrent"):
-        filename = torrent.split("/")[-1]
-        print(f"Moving '{torrent}' to seedbox")
+    torrents = glob.glob(f"{config['torrent_dir']}/*.torrent")
+    backup_dir = config["backup_dir"]
+    rate_limit = config["rate_limit"]
+    if len(torrents) > rate_limit:
+        send_log_msg(" ".join([
+            "needed to rate limit the torrents. Got",
+            str(len(torrents)),
+            "but we're only allowed to upload",
+            str(rate_limit),
+            "at a time",
+        ]))
+        torrents = torrents[0:rate_limit]
+    for torrent in torrents:
+        filename: str = torrent.split("/")[-1]
+        send_log_msg(f"Moving '{torrent}' to seedbox")
         sftp.put(
             torrent,
             f"/home/user/blackhole/{config['name']}/{filename}",
             callback=progress,
         )
-        print()
-        os.remove(torrent)
+        # NOTE: This might end up being a bit fragile.
+        # flexget makes the files like this: meta-[SubsPlease] Made in Abyss - Retsujitsu no Ougonkyou - 02 (1080p) [A386198C].mkv.torrent
+        # Reading the contents of the torrent might be better.
+        mkv_name = filename.replace("meta-","").replace(".torrent", "")
+        # Get the path we'll try to download it to
+        show_name = get_plex_filename(mkv_name)
+        backup_path = f"{backup_dir}/{show_name}/"
+        os.makedirs(backup_path)
+        print(f"backing up torrent to {backup_path}")
+        shutil.move(torrent, backup_path + filename)
 
 
 # Grabs files. They can be deleted after downloading
@@ -29,16 +53,18 @@ def download_files(sftp):
     files = sftp.listdir(remote_base_dir)
     for file in files:
         path = remote_base_dir + file
-        print(f"Downloading {file} from seedbox")
+        send_log_msg(f"Downloading {file} from seedbox")
         if is_writing(sftp, path):
-            print(f"skipping {file}. Is currently being written to disk")
+            send_log_msg(f"skipping {file}. Is currently being written to disk")
             continue
         destination = get_plex_filename(file)
         if not destination:
-            print(f"couldn't find handler for {file}")
-        if not_enough_space(sftp, path):
-            print(f"Can't download {file}. Not enough space on disk")
+            send_log_msg(f"@here couldn't find handler for {file}")
             continue
+        if not_enough_space(sftp, path):
+            send_log_msg(f"@here Can't download {file}. Not enough space on disk")
+            continue
+        last_percent = 0
         sftp.get(path, destination, callback=progress)
         print()
         print(f"Cleaning up {file} from seedbox")
@@ -63,29 +89,24 @@ last_speed = 0
 last_percent = 0
 
 def progress(current, total):
-    global last_percent
+    global last_speed
     progress_percent = current/total * 100
-    if round(last_percent, 1) < round(progress_percent, 1):
-        global last_time
-        global last_speed
-        current_time = time.time()
-        term_size = shutil.get_terminal_size(fallback=(120, 50))
-        progress = f"{int(progress_percent)}%"
-        speed = ((progress_percent - last_percent) * total / 100) / (current_time - last_time)
-        fancy_speed = get_fancy_speed(speed + last_speed / 2)
-        bar = ""
-        bar_size = term_size.columns - len(progress) - len(fancy_speed) - 5
-        for i in range(bar_size):
-            if i > int(progress_percent/100 * bar_size):
-                bar += " "
-            elif i == int(progress_percent/100 * bar_size):
-                bar += ">"
-            else:
-                bar += "="
-        print(f"\r[{bar}] {progress} {fancy_speed} ", end="")
-        last_time = current_time
-        last_percent = progress_percent
-        last_speed = speed
+    current_time = time.time()
+    term_size = shutil.get_terminal_size(fallback=(120, 50))
+    progress = f"{int(progress_percent)}%"
+    speed = ((progress_percent - last_percent) * total / 100) / (current_time - last_time)
+    fancy_speed = get_fancy_speed(speed + last_speed / 2)
+    bar = ""
+    bar_size = term_size.columns - len(progress) - len(fancy_speed) - 5
+    for i in range(bar_size):
+        if i > int(progress_percent/100 * bar_size):
+            bar += " "
+        elif i == int(progress_percent/100 * bar_size):
+            bar += ">"
+        else:
+            bar += "="
+    print(f"\r[{bar}] {progress} {fancy_speed} ", end="")
+    last_speed=speed
 
 
 def get_fancy_speed(speed_in_bps):
@@ -102,6 +123,8 @@ def read_config():
     config = {}
     raw_config = {}
     config_files = [
+        "/config/mva.yaml",
+        "/config/mva.yml",
         "/etc/mva/config.yaml",
         "/etc/mva/config.yml",
         f"{os.getenv('HOME')}/.config/mva/config.yaml",
@@ -139,6 +162,8 @@ def read_config():
         'seedbox_pass',
         'verbose',
     ]
+    global WEBHOOK_URL
+    WEBHOOK_URL = config['webhook_url']
     for key in config_keys:
         config[key] = raw_config.get(key)
     config['verbose'] = False
@@ -173,6 +198,9 @@ def dump_template_config():
         'seedbox_pass': "password",
         'verbose': False,
         'plex_dir': "/path/to/anime/plex/dir",
+        'backup_dir': "/path/to/backup/dir",
+        'webhook_url': "https://discord.gg/.../",
+        'rate_limit': 50,
     }
     config_file = f"{os.getenv('HOME')}/.config/mva/config.yaml"
     with open(config_file, "w") as handle:
@@ -181,7 +209,13 @@ def dump_template_config():
 
 def get_show_rule(config, name_pair):
     name = name_pair[0]
-    ep = int(name_pair[1])
+    if 'OVA' in name_pair[1]:
+        print("Got an ova?")
+        return None
+    elif 'v' in name_pair[1]:
+        ep = int(name_pair[1].split('v')[0])
+    else:
+        ep = int(float(name_pair[1]))
     for anime, data in config['anime'].items():
         if not contains_show_name(name, anime, data['seasons'].values()):
             continue
@@ -191,7 +225,7 @@ def get_show_rule(config, name_pair):
             is_name = name == anime or season_data['alias'] == name
             if is_in_range and is_name:
                 path = f"{config['plex_dir']}{anime}/Season {season_number}/"
-                file = f"{name} - s{int(season_number):02}e{int(ep):02}.mkv"
+                file = f"{name} - s{int(season_number):02}e{int(ep - ep_range[0] + 1):02}.mkv"
                 return {
                     'dir': path,
                     'file': file,
@@ -276,6 +310,15 @@ def print_verbose(*msg):
         print(*msg)
 
 
+def send_log_msg(msg):
+    if not WEBHOOK_URL:
+        print("no webhook url!")
+    else:
+        webhook = discord.Webhook.from_url(WEBHOOK_URL, adapter=discord.RequestsWebhookAdapter())
+        webhook.send(msg)
+    print(msg)
+
+
 def main(argv):
     ssh = paramiko.client.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.client.AutoAddPolicy)
@@ -298,4 +341,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except:
+        send_log_msg(f"@here **Script is _K I L L_**\n```\n{traceback.format_exc()}\n```")
