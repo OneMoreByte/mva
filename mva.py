@@ -123,6 +123,8 @@ def read_config():
     config = {}
     raw_config = {}
     config_files = [
+        "/config-yaml/mva.yaml",
+        "/config-yaml/mva.yml",
         "/config/mva.yaml",
         "/config/mva.yml",
         "/etc/mva/config.yaml",
