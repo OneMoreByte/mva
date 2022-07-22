@@ -28,21 +28,21 @@ def upload_torrents(sftp):
         ]))
         torrents = torrents[0:rate_limit]
     for torrent in torrents:
+        filename: str = torrent.split("/")[-1]
+        # NOTE: This might end up being a bit fragile.
+        # flexget makes the files like this: meta-[SubsPlease] Made in Abyss - Retsujitsu no Ougonkyou - 02 (1080p) [A386198C].mkv.torrent
+        # Reading the contents of the torrent might be better.
+        mkv_name = filename.replace("meta-","").replace(".torrent", "")
         show_name = get_plex_filename(mkv_name)
         if not show_name:
             send_log_msg(f"'{torrent}' wasn't able to be translated to a plex filename.")
             continue
-        filename: str = torrent.split("/")[-1]
         send_log_msg(f"Moving '{torrent}' to seedbox")
         sftp.put(
             torrent,
             f"/home/user/blackhole/{config['name']}/{filename}",
             callback=progress,
         )
-        # NOTE: This might end up being a bit fragile.
-        # flexget makes the files like this: meta-[SubsPlease] Made in Abyss - Retsujitsu no Ougonkyou - 02 (1080p) [A386198C].mkv.torrent
-        # Reading the contents of the torrent might be better.
-        mkv_name = filename.replace("meta-","").replace(".torrent", "")
         # Get the path we'll try to download it to
         backup_path = f"{backup_dir}/{show_name}/"
         os.makedirs(backup_path)
