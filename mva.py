@@ -166,10 +166,10 @@ def read_config():
         'webhook_url',
         'verbose',
     ]
-    global WEBHOOK_URL
-    WEBHOOK_URL = config['webhook_url']
     for key in config_keys:
         config[key] = raw_config.get(key)
+    global WEBHOOK_URL
+    WEBHOOK_URL = config['webhook_url']
     config['verbose'] = False
     return config
 
