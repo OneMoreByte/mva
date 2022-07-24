@@ -45,7 +45,10 @@ def upload_torrents(sftp):
         )
         # Get the path we'll try to download it to
         backup_path = f"{backup_dir}/{show_name}/"
-        os.makedirs(backup_path)
+        try:
+            os.makedirs(backup_path)
+        except FileExistsError:
+            print("didn't need to create a folder?")
         print(f"backing up torrent to {backup_path}")
         shutil.move(torrent, backup_path + filename)
 
