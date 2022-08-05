@@ -7,6 +7,7 @@ import paramiko
 import re
 import sys
 import shutil
+import socket
 import time
 import traceback
 import yaml
@@ -223,6 +224,9 @@ def get_show_rule(config, name_pair):
     if 'OVA' in name_pair[1]:
         print("Got an ova?")
         return None
+    elif '[Batch]' in name_pair[1]:
+        print("Got a batch release?")
+        return None
     elif 'v' in name_pair[1]:
         ep = int(name_pair[1].split('v')[0])
     else:
@@ -340,15 +344,20 @@ def main(argv):
             config['verbose'] = True
     if config['verbose']:
         print(config)
-    ssh.connect(
-        config['seedbox_host'],
-        port=config['seedbox_port'],
-        username=config['seedbox_user'],
-        password=config['seedbox_pass']
-    )
-    sftp = ssh.open_sftp()
-    upload_torrents(sftp)
-    download_files(sftp)
+    try:
+        ssh.connect(
+            config['seedbox_host'],
+            port=config['seedbox_port'],
+            username=config['seedbox_user'],
+            password=config['seedbox_pass']
+        )
+        sftp = ssh.open_sftp()
+        upload_torrents(sftp)
+        download_files(sftp)
+    except TimeoutError:
+        send_log_msg("timed out trying to connect to seedbox")
+    except socket.gaierror:
+        send_log_msg("couldn't open socket?")
 
 
 if __name__ == "__main__":
